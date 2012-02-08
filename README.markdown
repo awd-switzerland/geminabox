@@ -17,7 +17,8 @@ Create a config.ru as follows:
     require "rubygems"
     require "geminabox"
 
-    Geminabox.data = "/var/geminabox-data" # …or wherever
+    Geminabox.gems_directory = "/var/geminabox/gems" # …or wherever
+    Geminabox.docs_directory = "/var/geminabox/docs" # …or wherever
     run Geminabox
 
 And finally, hook up the config.ru as you normally would ([passenger][passenger], [thin][thin], [unicorn][unicorn], whatever floats your boat).

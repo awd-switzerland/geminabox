@@ -1,17 +1,30 @@
-require 'rubygems'
-require "digest/md5"
-require "builder"
-require 'sinatra/base'
-require 'rubygems/builder'
-require "rubygems/indexer"
+# encoding: utf-8
 
-require 'hostess'
+# external libraries
+require "builder"
+require "digest/md5"
+require "fileutils"
+require "rubygems"
+require "rubygems/builder"
+require "rubygems/indexer"
+require "rubygems/installer"
+require "securerandom"
+require "sinatra/base"
+require "yard"
+
+# internal libraries
+require "hostess"
+
+
 
 class Geminabox < Sinatra::Base
+  include FileUtils
+
   enable :static, :methodoverride
 
   set :public_folder, File.join(File.dirname(__FILE__), *%w[.. public])
-  set :data, File.join(File.dirname(__FILE__), *%w[.. data])
+  set :gems_directory, File.join(File.dirname(__FILE__), *%w[.. data gems])
+  set :docs_directory, File.join(File.dirname(__FILE__), *%w[.. data docs])
   set :build_legacy, false
   set :incremental_updates, false
   set :views, File.join(File.dirname(__FILE__), *%w[.. views])
@@ -52,6 +65,18 @@ class Geminabox < Sinatra::Base
     redirect url("/")
   end
 
+  get '/docs/:gem' do
+    redirect "/docs/#{params[:gem]}/index.html", 303
+  end
+
+  get '/docs/:gem/*' do
+    generate_docs_if_necessary(params[:gem])
+    rest_path = params[:splat].first
+    rest_path = "index.html" if rest_path.empty?
+
+    send_file "#{settings.docs_directory}/#{params[:gem]}/#{rest_path}"
+  end
+
   delete '/gems/*.gem' do
     File.delete file_path if File.exists? file_path
     reindex(:force_rebuild)
@@ -59,7 +84,7 @@ class Geminabox < Sinatra::Base
   end
 
   post '/upload' do
-    return "Please ensure #{File.expand_path(Geminabox.data)} is writable by the geminabox web server." unless File.writable? Geminabox.data
+    return "Please ensure #{File.expand_path(Geminabox.gems_directory)} is writable by the geminabox web server." unless File.writable? Geminabox.gems_directory
     unless params[:file] && (tmpfile = params[:file][:tempfile]) && (name = params[:file][:filename])
       @error = "No file selected"
       return erb(:upload)
@@ -67,9 +92,9 @@ class Geminabox < Sinatra::Base
 
     tmpfile.binmode
 
-    Dir.mkdir(File.join(settings.data, "gems")) unless File.directory? File.join(settings.data, "gems")
+    Dir.mkdir(File.join(settings.gems_directory, "gems")) unless File.directory? File.join(settings.gems_directory, "gems")
 
-    dest_filename = File.join(settings.data, "gems", File.basename(name))
+    dest_filename = File.join(settings.gems_directory, "gems", File.basename(name))
 
 
     if Geminabox.disallow_replace? and File.exist?(dest_filename)
@@ -83,7 +108,7 @@ class Geminabox < Sinatra::Base
       end
     end
 
-    File.open(dest_filename, "wb") do |f|
+    File.open(dest_filename, "wb:binary") do |f|
       while blk = tmpfile.read(65536)
         f << blk
       end
@@ -123,17 +148,34 @@ HTML
     end
   end
 
+  def generate_docs_if_necessary(gem)
+    generate_docs(gem) unless File.directory?("#{settings.docs_directory}/#{gem}")
+  end
+
+  def generate_docs(gem)
+    gem_src     = "#{settings.gems_directory}/gems/#{gem}.gem"
+    token       = SecureRandom.hex(32)
+    tmp_gem     = File.expand_path("tmp/gemdoc_#{token}")
+    doc_target  = "#{settings.docs_directory}/#{gem}"
+    mkdir_p(tmp_gem)
+    mkdir_p(doc_target)
+    Gem::Installer.new(gem_src, :unpack => true).unpack(tmp_gem)
+    Dir.chdir(tmp_gem) do
+      YARD::CLI::Yardoc.run('-o', doc_target)
+    end
+  end
+
   def indexer
-    Gem::Indexer.new(settings.data, :build_legacy => settings.build_legacy)
+    Gem::Indexer.new(settings.gems_directory, :build_legacy => settings.build_legacy)
   end
 
   def file_path
-    File.expand_path(File.join(settings.data, *request.path_info))
+    File.expand_path(File.join(settings.gems_directory, *request.path_info))
   end
 
   def load_gems
     %w(specs prerelease_specs).inject(GemVersionCollection.new){|gems, specs_file_type|
-      specs_file_path = File.join(settings.data, "#{specs_file_type}.#{Gem.marshal_version}.gz")
+      specs_file_path = File.join(settings.gems_directory, "#{specs_file_type}.#{Gem.marshal_version}.gz")
       if File.exists?(specs_file_path)
         gems |= Geminabox::GemVersionCollection.new(Marshal.load(Gem.gunzip(Gem.read_binary(specs_file_path))))
       end
@@ -147,7 +189,7 @@ HTML
 
   helpers do
     def spec_for(gem_name, version)
-      spec_file = File.join(settings.data, "quick", "Marshal.#{Gem.marshal_version}", "#{gem_name}-#{version}.gemspec.rz")
+      spec_file = File.join(settings.gems_directory, "quick", "Marshal.#{Gem.marshal_version}", "#{gem_name}-#{version}.gemspec.rz")
       Marshal.load(Gem.inflate(File.read(spec_file))) if File.exists? spec_file
     end
   end
